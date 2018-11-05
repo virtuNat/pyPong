@@ -1,45 +1,77 @@
 #!/usr/bin/env python
+import os
+
 from time import time
-from math import hypot, cos, sin
+from math import copysign, hypot
 from operator import add, sub, mul
+
 import asyncio as aio
 import pygame as pg
 
+def load_image (name, alpha=None, colorkey=None):
+    """Load an image file into memory."""
+    try:
+        image = pg.image.load(os.path.join('textures', name))
+    except pg.error:
+        print('Image loading failed: ')
+        raise
+    if alpha is None:
+        image = image.convert()
+        if colorkey is not None:
+            image.set_colorkey(colorkey)
+        return image
+    return image.convert_alpha()
+
+
+class ClipDrawGroup(pg.sprite.Group):
+
+    def draw(self, surf):
+        for sprite in self.sprites():
+            surf.blit(sprite.image, sprite.rect, sprite.clip)
+
+
 class Ball(pg.sprite.Sprite):
-    def __init__(self, radius=6):
+    """Ball"""
+
+    def __init__(self, atlas, bounds):
         super().__init__()
-        self.radius = radius
-        size = (2 * radius,) * 2
-        pos = (300 - radius, 150 - radius)
+        self.radius = 6
+        self.bounds = bounds
 
-        self.image = pg.Surface(size)
-        self.image.fill(0xC8C8C8)
+        self.image = atlas
+        self.clip = pg.Rect(70, 0, 12, 12)
+        self.rect = pg.Rect(0, 0, 12, 12)
+        self.rect.center = self.bounds.center
 
-        self.rect = pg.Rect(pos, size)
-        self.pos = list(self.rect.center)
+        self.pos = list(self.bounds.center)
         self.spe = 5
         self.vel = [-1, 0]
 
     def collide_paddle(self, paddle):
-        dx = self.pos[0] - paddle.side * 600
-        dy = self.pos[1] - paddle.pos
+        dx = self.pos[0] - paddle.pos[0]
+        dy = self.pos[1] - paddle.pos[1]
         dist = hypot(dx, dy)
         if dist > self.radius + paddle.radius:
             return
         nx = dx / dist
         ny = dy / dist
-        rx, ry = self.vel
+        rx = self.vel[0]
+        ry = self.vel[1] - paddle.vel
         norm = rx * nx + ry * ny
         if norm > 0:
             return
         tngt = ry * nx - rx * ny
         vx = tngt * -ny - norm * nx
-        vy = tngt * nx - norm * ny
+        vy = paddle.vel + tngt * nx - norm * ny
         vm = hypot(vx, vy)
         self.vel = [vx / vm, vy / vm]
         self.spe += 1
         if self.spe > 12:
             self.spe = 12
+        if paddle.side:
+            self.clip.top = 4 * self.radius
+        else:
+            self.clip.top = 2 * self.radius
 
     def update(self):
         self.pos = list(map(lambda p, v: p + self.spe * v, self.pos, self.vel))
@@ -48,9 +80,10 @@ class Ball(pg.sprite.Sprite):
         elif self.pos[1] > 295 - self.radius:
             self.vel[1] = -abs(self.vel[1])
         if self.pos[0] < 0 - self.radius or self.pos[0] > 600 + self.radius:
-            self.pos = [300 - self.radius, 150 - self.radius]
-            self.vel = [self.vel[0] / abs(self.vel[0]), 0]
+            self.pos = list(self.bounds.center)
+            self.vel = [copysign(1, self.vel[0]), 0]
             self.spe = 5
+            self.clip.top = 0
         self.rect.center = self.pos
 
     def draw(self, surf):
@@ -58,22 +91,20 @@ class Ball(pg.sprite.Sprite):
 
 
 class Paddle(pg.sprite.Sprite):
-    def __init__(self, side=0, radius=35):
+    def __init__(self, atlas, scrsize, side=0):
         super().__init__()
+        self.radius = 35
         self.side = side
-        self.radius = radius
 
-        scrsize = pg.display.get_surface().get_size()
-        size = (radius, 2 * radius)
-        pos = (side * (scrsize[0] - radius), 150 - radius)
+        self.image = atlas
+        self.rect = pg.Rect(0, 0, 35, 70)
+        self.clip = pg.Rect(self.radius * (1 - side), 0, 35, 70)
 
-        self.image = pg.Surface(size)
-        self.image.fill(
-            0x0000FF if side else 0xFF0000
-            )
-        self.rect = pg.Rect(pos, size)
-
-        self.pos = scrsize[1] / 2
+        self.pos = [side * scrsize[0], scrsize[1] / 2]
+        if side:
+            self.rect.midright = self.pos
+        else:
+            self.rect.midleft = self.pos
         self.vel = 0
         # self.acc = 0
 
@@ -88,25 +119,24 @@ class Paddle(pg.sprite.Sprite):
             self.vel = 0
 
     def update(self):
-        self.pos += self.vel
-        if self.pos < 5 + self.radius:
-            self.pos = 5 + self.radius
+        self.pos[1] += self.vel
+        if self.pos[1] < 5 + self.radius:
+            self.pos[1] = 5 + self.radius
             self.vel = 0
             # self.acc = 0
-        elif self.pos > 295 - self.radius:
-            self.pos = 295 - self.radius
+        elif self.pos[1] > 295 - self.radius:
+            self.pos[1] = 295 - self.radius
             self.vel = 0
             # self.acc = 0
-        self.rect.centery = self.pos
+        self.rect.centery = self.pos[1]
 
     def draw(self, surf):
         surf.blit(self.image, self.rect)
 
 
 class Wall(pg.sprite.Sprite):
-    def __init__(self, side=0):
+    def __init__(self, scrsize, side=0):
         super().__init__()
-        scrsize = pg.display.get_surface().get_size()
         size = (scrsize[0], 5)
         pos = (0, side * (scrsize[1] - 5))
 
@@ -118,16 +148,18 @@ class Wall(pg.sprite.Sprite):
 class GameStateHandler(object):
     def __init__(self, window):
         self.window = window
+        self.rect = self.window.get_rect()
+        self.atlas = load_image('atlas.png', colorkey=0xFF00FF)
 
-        self.ball = Ball()
-        self.pad1 = Paddle(0)
-        self.pad2 = Paddle(1)
+        self.ball = Ball(self.atlas, self.rect)
+        self.pad1 = Paddle(self.atlas, self.rect.size, 0)
+        self.pad2 = Paddle(self.atlas, self.rect.size, 1)
 
-        self.actors = pg.sprite.Group(
+        self.actors = ClipDrawGroup(
             self.ball, self.pad1, self.pad2
             )
         self.bgwall = pg.sprite.Group(
-            Wall(0), Wall(1)
+            Wall(self.rect.size, 0), Wall(self.rect.size, 1)
             )
 
     async def draw_frame(self):
@@ -136,8 +168,8 @@ class GameStateHandler(object):
         self.bgwall.draw(self.window)
         pg.display.flip()
 
-    async def run(self):
-        frate = 0.9375/60
+    async def run(self, fps):
+        frate = 0.9375 / fps
         ptime = time()
         frame = aio.ensure_future(self.draw_frame())
         while True:
@@ -181,11 +213,11 @@ def main():
 
     aloop = aio.get_event_loop()
     try:
-        aloop.run_until_complete(game_state.run())
+        aloop.run_until_complete(game_state.run(60))
     except KeyboardInterrupt:
         pass
-    except Exception:
-        raise
+    except Exception as exc:
+        raise RuntimeError('(╯°□°)╯︵ ┻━┻') from exc
     finally:
         aloop.close()
         pg.quit()
