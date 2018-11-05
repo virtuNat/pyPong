@@ -12,7 +12,7 @@ base = 'Win32GUI' if sys.platform == 'win32' else None
 
 setup(
     name = 'pyPong',
-    version = '1.0',
+    version = '1.1',
     description = 'Pygame/Asyncio Pong Test',
     url = '',
     author = 'virtuNat',

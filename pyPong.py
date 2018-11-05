@@ -2,9 +2,8 @@
 import os
 
 from time import time
-from math import copysign, hypot
-from operator import add, sub, mul
-
+from math import copysign, hypot, sqrt
+from random import randint
 import asyncio as aio
 import pygame as pg
 
@@ -23,15 +22,30 @@ def load_image (name, alpha=None, colorkey=None):
     return image.convert_alpha()
 
 
-class ClipDrawGroup(pg.sprite.Group):
+class ClipDrawSprite(pg.sprite.Sprite):
+    """Sprites that use a clip rectangle to designate its tile in an atlas."""
+
+    def __init__(self):
+        super().__init__()
+        self.image = None
+        self.rect = None
+        self.clip = None
 
     def draw(self, surf):
+        surf.blit(self.image, self.rect, self.clip)
+
+
+class ClipDrawGroup(pg.sprite.Group):
+    """Group that accomodates atlas based sprites."""
+
+    def draw(self, surf):
+        blitfunc = surf.blit
         for sprite in self.sprites():
-            surf.blit(sprite.image, sprite.rect, sprite.clip)
+            blitfunc(sprite.image, sprite.rect, sprite.clip)
 
 
-class Ball(pg.sprite.Sprite):
-    """Ball"""
+class Ball(ClipDrawSprite):
+    """You know, the thing that bounces and is the objective?"""
 
     def __init__(self, atlas, bounds):
         super().__init__()
@@ -39,74 +53,106 @@ class Ball(pg.sprite.Sprite):
         self.bounds = bounds
 
         self.image = atlas
-        self.clip = pg.Rect(70, 0, 12, 12)
         self.rect = pg.Rect(0, 0, 12, 12)
+        self.clip = pg.Rect(70, 0, 12, 12)
         self.rect.center = self.bounds.center
 
         self.pos = list(self.bounds.center)
-        self.spe = 5
-        self.vel = [-1, 0]
+        self.spe = 6
+        self.vel = [-1 if randint(0, 1) else 1, 0]
 
     def collide_paddle(self, paddle):
         dx = self.pos[0] - paddle.pos[0]
         dy = self.pos[1] - paddle.pos[1]
         dist = hypot(dx, dy)
-        if dist > self.radius + paddle.radius:
+        rd = self.radius + paddle.radius
+        # If the radii do not intersect, there is no collision.
+        if dist > rd:
             return
+        rx, ry = self.vel
+        # Solve for the point to clip to.
+        dif1 = -(dx*rx + dy*ry)
+        dif2 = (rx*dy - ry*dx)
+        disc = sqrt(rd*rd - dif2*dif2)
+        para = dif1 - disc
+        self.pos[0] += rx * para
+        self.pos[1] += ry * para
+        self.rect.center = self.pos
+        # Check dot product of velocity to normal.
         nx = dx / dist
         ny = dy / dist
-        rx = self.vel[0]
-        ry = self.vel[1] - paddle.vel
         norm = rx * nx + ry * ny
+        # If dot product is positive, ball is moving away from paddle.
         if norm > 0:
             return
+        # Solve for the tangent component.
         tngt = ry * nx - rx * ny
+        # Flip the normal component and re-sum them into x-y basis.
         vx = tngt * -ny - norm * nx
-        vy = paddle.vel + tngt * nx - norm * ny
+        vy = tngt * nx - norm * ny
+        # Normalize the result.
         vm = hypot(vx, vy)
         self.vel = [vx / vm, vy / vm]
+        # Increase the speed of the ball.
         self.spe += 1
         if self.spe > 12:
             self.spe = 12
+        # Change ball color based on which paddle hit it.
         if paddle.side:
-            self.clip.top = 4 * self.radius
+            self.clip.y = 4 * self.radius
         else:
-            self.clip.top = 2 * self.radius
+            self.clip.y = 2 * self.radius
 
     def update(self):
-        self.pos = list(map(lambda p, v: p + self.spe * v, self.pos, self.vel))
-        if self.pos[1] < 5 + self.radius:
+        # Update position based on velocity.
+        self.pos[0] += self.spe * self.vel[0]
+        self.pos[1] += self.spe * self.vel[1]
+        # Calculate collision with boundary wall.
+        if self.pos[1] < self.bounds.top + self.radius:
+            dy = self.bounds.top + self.radius - self.pos[1]
+            dx = dy * self.vel[0] / self.vel[1]
+            self.pos = [self.pos[0] + dx, self.pos[1] + dy]
             self.vel[1] = abs(self.vel[1])
-        elif self.pos[1] > 295 - self.radius:
+        elif self.pos[1] > self.bounds.bottom - self.radius:
+            dy = self.bounds.bottom - self.radius - self.pos[1]
+            dx = dy * self.vel[0] / self.vel[1]
+            self.pos = [self.pos[0] + dx, self.pos[1] + dy]
             self.vel[1] = -abs(self.vel[1])
-        if self.pos[0] < 0 - self.radius or self.pos[0] > 600 + self.radius:
+        # Reset if out of bounds.
+        if (self.pos[0] < self.bounds.left - self.radius 
+            or self.pos[0] > self.bounds.right + self.radius
+            ):
             self.pos = list(self.bounds.center)
             self.vel = [copysign(1, self.vel[0]), 0]
-            self.spe = 5
-            self.clip.top = 0
+            self.spe = 6
+            self.clip.y = 0
+        # Update display position.
         self.rect.center = self.pos
 
-    def draw(self, surf):
-        surf.blit(self.image, self.rect)
 
+class Paddle(ClipDrawSprite):
+    """Player-controlled collision boundaries. Ugh, vectors."""
 
-class Paddle(pg.sprite.Sprite):
-    def __init__(self, atlas, scrsize, side=0):
+    def __init__(self, atlas, bounds, side=0):
         super().__init__()
         self.radius = 35
         self.side = side
+        self.bounds = bounds
 
         self.image = atlas
         self.rect = pg.Rect(0, 0, 35, 70)
         self.clip = pg.Rect(self.radius * (1 - side), 0, 35, 70)
 
-        self.pos = [side * scrsize[0], scrsize[1] / 2]
+        self.pos = [side * bounds.w, bounds.centery]
         if side:
             self.rect.midright = self.pos
         else:
             self.rect.midleft = self.pos
         self.vel = 0
-        # self.acc = 0
+
+        self.kickon = False
+        self.kicktime = 0
+        self.kickradius = 70
 
     def set_movedir(self, movedir):
         if self.vel * movedir > 0:
@@ -119,19 +165,17 @@ class Paddle(pg.sprite.Sprite):
             self.vel = 0
 
     def update(self):
+        # Update position based on velocity.
         self.pos[1] += self.vel
-        if self.pos[1] < 5 + self.radius:
-            self.pos[1] = 5 + self.radius
+        # Clip position to the boundary.
+        if self.pos[1] < self.bounds.top + self.radius:
+            self.pos[1] = self.bounds.top + self.radius
             self.vel = 0
-            # self.acc = 0
-        elif self.pos[1] > 295 - self.radius:
-            self.pos[1] = 295 - self.radius
+        elif self.pos[1] > self.bounds.bottom - self.radius:
+            self.pos[1] = self.bounds.bottom - self.radius
             self.vel = 0
-            # self.acc = 0
+        # Update display position.
         self.rect.centery = self.pos[1]
-
-    def draw(self, surf):
-        surf.blit(self.image, self.rect)
 
 
 class Wall(pg.sprite.Sprite):
@@ -146,14 +190,17 @@ class Wall(pg.sprite.Sprite):
 
 
 class GameStateHandler(object):
+    """Handles the game, self-explanatory."""
+
     def __init__(self, window):
         self.window = window
         self.rect = self.window.get_rect()
+        self.bounds = pg.Rect(0, 5, self.rect.w, self.rect.h - 10)
         self.atlas = load_image('atlas.png', colorkey=0xFF00FF)
 
-        self.ball = Ball(self.atlas, self.rect)
-        self.pad1 = Paddle(self.atlas, self.rect.size, 0)
-        self.pad2 = Paddle(self.atlas, self.rect.size, 1)
+        self.ball = Ball(self.atlas, self.bounds)
+        self.pad1 = Paddle(self.atlas, self.bounds, 0)
+        self.pad2 = Paddle(self.atlas, self.bounds, 1)
 
         self.actors = ClipDrawGroup(
             self.ball, self.pad1, self.pad2
@@ -163,12 +210,14 @@ class GameStateHandler(object):
             )
 
     async def draw_frame(self):
+        """Draw task."""
         self.window.fill((0, 0, 0))
         self.actors.draw(self.window)
         self.bgwall.draw(self.window)
         pg.display.flip()
 
     async def run(self, fps):
+        """Main task, running the game logic and input queue."""
         frate = 0.9375 / fps
         ptime = time()
         frame = aio.ensure_future(self.draw_frame())
@@ -195,7 +244,7 @@ class GameStateHandler(object):
                     elif event.key == pg.K_DOWN:
                         self.pad2.set_stopdir(+1)
             self.actors.update()
-            if self.ball.pos[0] < 300:
+            if self.ball.pos[0] < self.bounds.centerx:
                 self.ball.collide_paddle(self.pad1)
             else:
                 self.ball.collide_paddle(self.pad2)
