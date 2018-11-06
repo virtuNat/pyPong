@@ -70,21 +70,29 @@ class Ball(ClipDrawSprite):
         if dist > rd:
             return
         rx, ry = self.vel
-        # Solve for the point to clip to.
-        dif1 = -(dx*rx + dy*ry)
-        dif2 = (rx*dy - ry*dx)
-        disc = sqrt(rd*rd - dif2*dif2)
-        para = dif1 - disc
-        self.pos[0] += rx * para
-        self.pos[1] += ry * para
-        self.rect.center = self.pos
         # Check dot product of velocity to normal.
         nx = dx / dist
         ny = dy / dist
         norm = rx * nx + ry * ny
+        # Solve for the point to clip to.
+        dif1 = -(dx*rx + dy*ry)
+        dif2 = (rx*dy - ry*dx)
+        disc = sqrt(rd*rd - dif2*dif2)
         # If dot product is positive, ball is moving away from paddle.
-        if norm > 0:
+        if norm >= 0:
+            # Clip to the closer side of the paddle.
+            p1 = dif1 + disc
+            p2 = dif1 - disc
+            para = min(abs(p1), abs(p2))
+            self.pos[0] += rx * para
+            self.pos[1] += ry * para
+            self.rect.center = self.pos
             return
+        # Clip to the side of the paddle that forces a backtrack.
+        para = dif1 - disc
+        self.pos[0] += rx * para
+        self.pos[1] += ry * para
+        self.rect.center = self.pos
         # Solve for the tangent component.
         tngt = ry * nx - rx * ny
         # Flip the normal component and re-sum them into x-y basis.
