@@ -57,14 +57,22 @@ class Ball(ClipDrawSprite):
         self.clip = pg.Rect(70, 0, 12, 12)
         self.rect.center = self.bounds.center
 
+        self.minspe = 4
+        self.maxspe = 25
+
         self.pos = list(self.bounds.center)
-        self.spe = 6
+        self.spe = self.minspe
         self.vel = [-1 if randint(0, 1) else 1, 0]
 
     def collide_paddle(self, paddle):
         dx = self.pos[0] - paddle.pos[0]
         dy = self.pos[1] - paddle.pos[1]
         dist = hypot(dx, dy)
+        if paddle.kickon and dist <= self.radius + paddle.kickradius:
+            self.vel = [dx / dist, dy / dist]
+            self.register_hit(paddle, 2)
+            # paddle.reset_kick()
+            return
         rd = self.radius + paddle.radius
         # If the radii do not intersect, there is no collision.
         if dist > rd:
@@ -73,6 +81,7 @@ class Ball(ClipDrawSprite):
         # Check dot product of velocity to normal.
         nx = dx / dist
         ny = dy / dist
+        # Both n and r are unit vectors, the dot product is just cos(w)
         norm = rx * nx + ry * ny
         # Solve for the point to clip to.
         dif1 = -(dx*rx + dy*ry)
@@ -83,7 +92,7 @@ class Ball(ClipDrawSprite):
             # Clip to the closer side of the paddle.
             p1 = dif1 + disc
             p2 = dif1 - disc
-            para = min(abs(p1), abs(p2))
+            para = p1 if abs(p1) < abs(p2) else p2
             self.pos[0] += rx * para
             self.pos[1] += ry * para
             self.rect.center = self.pos
@@ -93,18 +102,20 @@ class Ball(ClipDrawSprite):
         self.pos[0] += rx * para
         self.pos[1] += ry * para
         self.rect.center = self.pos
-        # Solve for the tangent component.
+        # Solve for the tangent component, sin(w)
         tngt = ry * nx - rx * ny
         # Flip the normal component and re-sum them into x-y basis.
-        vx = tngt * -ny - norm * nx
-        vy = tngt * nx - norm * ny
-        # Normalize the result.
-        vm = hypot(vx, vy)
-        self.vel = [vx / vm, vy / vm]
+        self.vel = [
+            tngt * -ny - norm * nx,
+            tngt * nx - norm * ny,
+            ]
+        self.register_hit(paddle, 0.5)
+
+    def register_hit(self, paddle, acc):
         # Increase the speed of the ball.
-        self.spe += 1
-        if self.spe > 12:
-            self.spe = 12
+        self.spe += acc
+        if self.spe > self.maxspe:
+            self.spe = self.maxspe
         # Change ball color based on which paddle hit it.
         if paddle.side:
             self.clip.y = 4 * self.radius
@@ -132,7 +143,7 @@ class Ball(ClipDrawSprite):
             ):
             self.pos = list(self.bounds.center)
             self.vel = [copysign(1, self.vel[0]), 0]
-            self.spe = 6
+            self.spe = self.minspe
             self.clip.y = 0
         # Update display position.
         self.rect.center = self.pos
@@ -158,9 +169,9 @@ class Paddle(ClipDrawSprite):
             self.rect.midleft = self.pos
         self.vel = 0
 
-        self.kickon = False
-        self.kicktime = 0
-        self.kickradius = 70
+        self.kickradius = 90
+        self.kicksprite = KickSprite(atlas, bounds, self)
+        self.reset_kick()
 
     def set_movedir(self, movedir):
         if self.vel * movedir > 0:
@@ -172,7 +183,30 @@ class Paddle(ClipDrawSprite):
         if self.vel * stopdir > 0:
             self.vel = 0
 
+    def set_kick(self):
+        if self.kickreset == 0:
+            self.kickon = True
+            self.kicksprite.set_kick()
+            self.clip.top = 2 * self.radius
+
+    def reset_kick(self):
+        self.kickon = False
+        self.kickreset = 75
+        self.kicktime = 0
+        self.kicksprite.reset_kick()
+        self.clip.top = 4 * self.radius
+
     def update(self):
+        if self.kickon:
+            if self.kicktime <= 10:
+                self.kicktime += 1
+            else:
+                self.reset_kick()
+        else:
+            if self.kickreset > 0:
+                self.kickreset -= 1
+            else:
+                self.clip.top = 0
         # Update position based on velocity.
         self.pos[1] += self.vel
         # Clip position to the boundary.
@@ -186,15 +220,31 @@ class Paddle(ClipDrawSprite):
         self.rect.centery = self.pos[1]
 
 
-class Wall(pg.sprite.Sprite):
-    def __init__(self, scrsize, side=0):
-        super().__init__()
-        size = (scrsize[0], 5)
-        pos = (0, side * (scrsize[1] - 5))
+class KickSprite(ClipDrawSprite):
 
-        self.image = pg.Surface(size)
-        self.image.fill(0xA0A0A0)
-        self.rect = pg.Rect(pos, size)
+    def __init__(self, atlas, bounds, paddle):
+        super().__init__()
+        self.bounds = bounds
+        self.paddle = paddle
+
+        size = (paddle.kickradius, 2*paddle.kickradius)
+        self.image = atlas.subsurface(
+            (82 + paddle.kickradius*(1 - paddle.side), 0), size
+            )
+        self.rect = self.image.get_rect()
+        if paddle.side:
+            self.rect.midright = paddle.pos
+        else:
+            self.rect.midleft = paddle.pos
+
+    def set_kick(self):
+        self.image.set_alpha(0xFF)
+
+    def reset_kick(self):
+        self.image.set_alpha(0x00)
+
+    def update(self):
+        self.rect.centery = self.paddle.rect.centery
 
 
 class GameStateHandler(object):
@@ -205,23 +255,21 @@ class GameStateHandler(object):
         self.rect = self.window.get_rect()
         self.bounds = pg.Rect(0, 5, self.rect.w, self.rect.h - 10)
         self.atlas = load_image('atlas.png', colorkey=0xFF00FF)
+        self.field = load_image('field.png')
 
         self.ball = Ball(self.atlas, self.bounds)
         self.pad1 = Paddle(self.atlas, self.bounds, 0)
         self.pad2 = Paddle(self.atlas, self.bounds, 1)
 
         self.actors = ClipDrawGroup(
-            self.ball, self.pad1, self.pad2
-            )
-        self.bgwall = pg.sprite.Group(
-            Wall(self.rect.size, 0), Wall(self.rect.size, 1)
+            self.ball, self.pad1, self.pad2,
+            self.pad1.kicksprite, self.pad2.kicksprite,
             )
 
     async def draw_frame(self):
         """Draw task."""
-        self.window.fill((0, 0, 0))
+        self.window.blit(self.field, (0, 0))
         self.actors.draw(self.window)
-        self.bgwall.draw(self.window)
         pg.display.flip()
 
     async def run(self, fps):
@@ -238,10 +286,14 @@ class GameStateHandler(object):
                         self.pad1.set_movedir(-1)
                     elif event.key == pg.K_s:
                         self.pad1.set_movedir(+1)
+                    elif event.key == pg.K_d:
+                        self.pad1.set_kick()
                     elif event.key == pg.K_UP:
                         self.pad2.set_movedir(-1)
                     elif event.key == pg.K_DOWN:
                         self.pad2.set_movedir(+1)
+                    elif event.key == pg.K_LEFT:
+                        self.pad2.set_kick()
                 elif event.type == pg.KEYUP:
                     if event.key == pg.K_w:
                         self.pad1.set_stopdir(-1)
