@@ -25,17 +25,24 @@ def load_image (name, alpha=None, colorkey=None):
 class ClipDrawSprite(pg.sprite.Sprite):
     """Sprites that use a clip rectangle to designate its tile in an atlas."""
 
-    def __init__(self):
+    def __init__(self, image=None, rect=None, clip=None):
         super().__init__()
-        self.image = None
-        self.rect = None
-        self.clip = None
+        self.image = image
+        if image is not None and rect is None:
+            self.rect = self.image.get_rect()
+        else:
+            self.rect = rect
+        if self.rect is not None and clip is None:
+            self.clip = self.rect.copy()
+            self.clip.topleft = (0, 0)
+        else:
+            self.clip = clip
 
     def draw(self, surf):
         surf.blit(self.image, self.rect, self.clip)
 
 
-class ClipDrawGroup(pg.sprite.Group):
+class ClipDrawGroup(pg.sprite.OrderedUpdates):
     """Group that accomodates atlas based sprites."""
 
     def draw(self, surf):
@@ -48,17 +55,17 @@ class Ball(ClipDrawSprite):
     """You know, the thing that bounces and is the objective?"""
 
     def __init__(self, atlas, bounds):
-        super().__init__()
+        super().__init__(
+            atlas,
+            pg.Rect(0, 0, 12, 12),
+            pg.Rect(70, 0, 12, 12),
+            )
         self.radius = 6
         self.bounds = bounds
-
-        self.image = atlas
-        self.rect = pg.Rect(0, 0, 12, 12)
-        self.clip = pg.Rect(70, 0, 12, 12)
         self.rect.center = self.bounds.center
 
-        self.minspe = 4
-        self.maxspe = 25
+        self.minspe = 1.75
+        self.maxspe = 6.25
 
         self.pos = list(self.bounds.center)
         self.spe = self.minspe
@@ -70,8 +77,8 @@ class Ball(ClipDrawSprite):
         dist = hypot(dx, dy)
         if paddle.kickon and dist <= self.radius + paddle.kickradius:
             self.vel = [dx / dist, dy / dist]
-            self.register_hit(paddle, 2)
-            # paddle.reset_kick()
+            self.register_hit(paddle, 0.5)
+            paddle.reset_kick()
             return
         rd = self.radius + paddle.radius
         # If the radii do not intersect, there is no collision.
@@ -109,7 +116,7 @@ class Ball(ClipDrawSprite):
             tngt * -ny - norm * nx,
             tngt * nx - norm * ny,
             ]
-        self.register_hit(paddle, 0.5)
+        self.register_hit(paddle, 0.125)
 
     def register_hit(self, paddle, acc):
         # Increase the speed of the ball.
@@ -149,25 +156,60 @@ class Ball(ClipDrawSprite):
         self.rect.center = self.pos
 
 
+class BallTrail(ClipDrawSprite):
+
+    def __init__(self, atlas, ball):
+        super().__init__(atlas, ball.rect.copy(), ball.clip.copy())
+        self.image.set_alpha(0x3F)
+
+    def update(self, ball):
+        self.rect.topleft = ball.rect.topleft
+        self.clip.topleft = ball.clip.topleft
+
+
+class BallGroup(ClipDrawGroup):
+
+    def __init__(self, atlas, bounds, size):
+        self.ball = Ball(atlas, bounds)
+        self.size = size
+        atlas2 = atlas.copy()
+        super().__init__(
+            *(BallTrail(atlas2, self.ball) for _ in range(size - 1)),
+            self.ball,
+            )
+
+    def __len__(self):
+        return self.size
+
+    def update(self):
+        sprites = self.sprites()
+        for sp1, sp2 in zip(sprites[:-1], sprites[1:]):
+            sp1.update(sp2)
+        self.ball.update()
+
+
 class Paddle(ClipDrawSprite):
     """Player-controlled collision boundaries. Ugh, vectors."""
 
     def __init__(self, atlas, bounds, side=0):
-        super().__init__()
         self.radius = 35
         self.side = side
         self.bounds = bounds
 
-        self.image = atlas
-        self.rect = pg.Rect(0, 0, 35, 70)
-        self.clip = pg.Rect(self.radius * (1 - side), 0, 35, 70)
+        super().__init__(
+            atlas,
+            pg.Rect(0, 0, 35, 70),
+            pg.Rect(self.radius * (1 - side), 0, 35, 70),
+            )
 
         self.pos = [side * bounds.w, bounds.centery]
         if side:
             self.rect.midright = self.pos
         else:
             self.rect.midleft = self.pos
+        self.dir = 0
         self.vel = 0
+        self.spe = 10
 
         self.kickradius = 90
         self.kicksprite = KickSprite(atlas, bounds, self)
@@ -175,26 +217,24 @@ class Paddle(ClipDrawSprite):
 
     def set_movedir(self, movedir):
         if self.vel * movedir > 0:
-            self.vel = 0
+            self.dir = 0
         else:
-            self.vel = movedir * 6
+            self.dir = movedir
 
     def set_stopdir(self, stopdir):
         if self.vel * stopdir > 0:
-            self.vel = 0
+            self.dir = 0
 
     def set_kick(self):
         if self.kickreset == 0:
             self.kickon = True
             self.kicksprite.set_kick()
-            self.clip.top = 2 * self.radius
 
     def reset_kick(self):
         self.kickon = False
         self.kickreset = 75
         self.kicktime = 0
-        self.kicksprite.reset_kick()
-        self.clip.top = 4 * self.radius
+        self.clip.top = 2 * self.radius
 
     def update(self):
         if self.kickon:
@@ -208,14 +248,15 @@ class Paddle(ClipDrawSprite):
             else:
                 self.clip.top = 0
         # Update position based on velocity.
+        self.vel = self.dir * self.spe
         self.pos[1] += self.vel
         # Clip position to the boundary.
         if self.pos[1] < self.bounds.top + self.radius:
             self.pos[1] = self.bounds.top + self.radius
-            self.vel = 0
+            self.dir = 0
         elif self.pos[1] > self.bounds.bottom - self.radius:
             self.pos[1] = self.bounds.bottom - self.radius
-            self.vel = 0
+            self.dir = 0
         # Update display position.
         self.rect.centery = self.pos[1]
 
@@ -223,28 +264,40 @@ class Paddle(ClipDrawSprite):
 class KickSprite(ClipDrawSprite):
 
     def __init__(self, atlas, bounds, paddle):
-        super().__init__()
+        super().__init__(
+            atlas.subsurface(
+                (82 + paddle.kickradius*(1 - paddle.side), 0),
+                (paddle.kickradius, 2*paddle.kickradius),
+                ),
+            None, None
+            )
         self.bounds = bounds
         self.paddle = paddle
-
-        size = (paddle.kickradius, 2*paddle.kickradius)
-        self.image = atlas.subsurface(
-            (82 + paddle.kickradius*(1 - paddle.side), 0), size
-            )
-        self.rect = self.image.get_rect()
+        self.rectbase = self.rect.copy()
+        self.timer = 0
         if paddle.side:
-            self.rect.midright = paddle.pos
+            self.rectbase.midright = paddle.pos
         else:
-            self.rect.midleft = paddle.pos
+            self.rectbase.midleft = paddle.pos
 
     def set_kick(self):
-        self.image.set_alpha(0xFF)
-
-    def reset_kick(self):
-        self.image.set_alpha(0x00)
+        self.image.set_alpha(200)
+        self.timer = 10
 
     def update(self):
-        self.rect.centery = self.paddle.rect.centery
+        if self.timer > 0:
+            self.image.set_alpha(25 * self.timer)
+            self.timer -= 1
+        else:
+            self.image.set_alpha(0)
+        pos = self.paddle.rect.centery
+        self.rectbase.centery = pos
+        self.rect = self.rectbase.clip(self.bounds)
+        self.clip.height = self.rect.height
+        if pos < self.bounds.centery:
+            self.clip.bottom = self.rectbase.height
+        else:
+            self.clip.top = 0            
 
 
 class GameStateHandler(object):
@@ -253,23 +306,26 @@ class GameStateHandler(object):
     def __init__(self, window):
         self.window = window
         self.rect = self.window.get_rect()
-        self.bounds = pg.Rect(0, 5, self.rect.w, self.rect.h - 10)
+        self.bounds = pg.Rect(0, 205, self.rect.w, 390)
         self.atlas = load_image('atlas.png', colorkey=0xFF00FF)
         self.field = load_image('field.png')
 
-        self.ball = Ball(self.atlas, self.bounds)
+        self.balls = BallGroup(self.atlas, self.bounds, 25)
+        self.ball = self.balls.ball
         self.pad1 = Paddle(self.atlas, self.bounds, 0)
         self.pad2 = Paddle(self.atlas, self.bounds, 1)
 
         self.actors = ClipDrawGroup(
-            self.ball, self.pad1, self.pad2,
+            self.pad1, self.pad2,
             self.pad1.kicksprite, self.pad2.kicksprite,
             )
 
     async def draw_frame(self):
         """Draw task."""
-        self.window.blit(self.field, (0, 0))
+        self.window.fill((127, 0, 127))
+        self.window.blit(self.field, (0, 200))
         self.actors.draw(self.window)
+        self.balls.draw(self.window)
         pg.display.flip()
 
     async def run(self, fps):
@@ -304,10 +360,12 @@ class GameStateHandler(object):
                     elif event.key == pg.K_DOWN:
                         self.pad2.set_stopdir(+1)
             self.actors.update()
-            if self.ball.pos[0] < self.bounds.centerx:
-                self.ball.collide_paddle(self.pad1)
-            else:
-                self.ball.collide_paddle(self.pad2)
+            for _ in range(4):
+                self.balls.update()
+                if self.ball.pos[0] < self.bounds.width * 0.25:
+                    self.ball.collide_paddle(self.pad1)
+                elif self.ball.pos[0] > self.bounds.width * 0.75:
+                    self.ball.collide_paddle(self.pad2)
             if frame.done():
                 frame = aio.ensure_future(self.draw_frame())
             await aio.sleep(frate - (time() - ptime)%frate)
@@ -317,7 +375,7 @@ class GameStateHandler(object):
 def main():
     pg.init()
     pg.display.set_caption('pyPong')
-    window = pg.display.set_mode((600, 300), pg.DOUBLEBUF)
+    window = pg.display.set_mode((800, 600), pg.DOUBLEBUF)
     game_state = GameStateHandler(window)
 
     aloop = aio.get_event_loop()
